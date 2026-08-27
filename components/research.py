@@ -4,12 +4,14 @@ from src.schema import EvidencePack
 from typing import List
 from dotenv import load_dotenv
 
-from langchain_anthropic import ChatAnthropic
+# from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
-llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+# llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash")
 
 def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
     tool = TavilySearchResults(max_results=max_results)

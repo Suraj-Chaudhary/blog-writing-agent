@@ -2,13 +2,15 @@ from src.state import State
 from src.schema import Task, Plan, EvidenceItem
 
 from langgraph.types import Send
-from langchain_anthropic import ChatAnthropic
+# from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from dotenv import load_dotenv
 
 load_dotenv()
-llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+# llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite")
 
 
 def fanout(state: State):
@@ -99,6 +101,6 @@ def worker_node(payload: dict) -> dict:
                 )
             ),
         ]
-    ).content.strip()
+    ).content[0]['text'].strip()
 
     return {'sections': [(task.id, section_md)]}
