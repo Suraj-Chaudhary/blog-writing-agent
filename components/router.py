@@ -2,12 +2,14 @@ from src.state import State
 from src.schema import RouterDecision
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_anthropic import ChatAnthropic
+# from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from dotenv import load_dotenv
 
 load_dotenv()
-llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+# llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite")
 
 ROUTER_SYSTEM = """You are a routing module for a technical blog planner.
 

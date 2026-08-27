@@ -1,13 +1,15 @@
 from src.schema import GlobalImagePlan
 from src.state import State
 
-from langchain_anthropic import ChatAnthropic
+# from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from dotenv import load_dotenv
 
 load_dotenv()
-llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+# llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash")
 
 DECIDE_IMAGES_SYSTEM = """You are an expert technical editor.
 Decide if images/diagrams are needed for THIS blog.

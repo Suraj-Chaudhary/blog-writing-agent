@@ -2,12 +2,14 @@ from src.state import State
 from src.schema import Plan
 
 from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from dotenv import load_dotenv
 
 load_dotenv()
-llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+# llm = ChatAnthropic(model="claude-haiku-4-5-20251001")
+llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash")
 
 
 ORCH_SYSTEM = """You are a senior technical writer and developer advocate.
