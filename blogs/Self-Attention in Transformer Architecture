@@ -1,0 +1,369 @@
+# Self-Attention in Transformer Architecture: From Fundamentals to Implementation
+
+## What Self-Attention Solves
+
+Self-attention emerged to overcome fundamental limitations in recurrent neural networks (RNNs) that dominated sequence modeling before transformers.
+
+**Sequential bottleneck.** RNNs process sequences one token at a time, forcing each step to depend on the previous hidden state. This creates a hard dependency chain: computing position *t* requires computing all positions 1 through *t-1*. Self-attention breaks this constraint by computing relationships between *all* pairs of tokens in parallel, enabling full batch processing across sequence length.
+
+**Gradient flow over long distances.** RNNs suffer from vanishing/exploding gradients because backpropagation must traverse the entire dependency chain. Over long sequences, gradients either shrink exponentially or explode, making it hard to learn dependencies between distant tokens. Self-attention computes direct paths between any two positions in a single operation, preserving gradient magnitude and enabling effective learning of long-range dependencies without exponential degradation.
+
+**Complexity trade-off.** RNNs achieve O(*n*) complexity per step but require *n* sequential steps, giving O(*n*²) wall-clock time for a sequence of length *n*. Self-attention has O(*n*²) space and compute per forward pass but processes the entire sequence at once, enabling massive parallelization across GPUs/TPUs.
+
+**Positional information.** RNNs implicitly encode position through sequential processing—early positions are processed first, late positions processed last. Self-attention is permutation-invariant: feeding tokens in any order produces the same set of output relationships. Position must be explicitly encoded (via positional embeddings or encodings) to preserve sequence order information.
+
+## The Query-Key-Value Mechanism
+
+At the heart of self-attention lies a deceptively simple idea: compute relevance scores between positions, normalize them into probabilities, and use those probabilities to aggregate information. The query-key-value (QKV) framework operationalizes this.
+
+> **[IMAGE GENERATION FAILED]** Scaled dot-product attention: Input tokens are projected into Query, Key, and Value spaces. Dot product similarity between Q and K generates attention weights (normalized via softmax), which aggregate the Values to produce output.
+>
+> **Alt:** Query-Key-Value attention mechanism flow diagram
+>
+> **Prompt:** Technical diagram showing the scaled dot-product attention mechanism. Input tokens at the top flow through three separate linear projections labeled Q (Query), K (Key), and V (Value), each creating matrices. Show Q multiplied by K-transpose producing a score matrix. Display softmax normalization with √d scaling. Finally show the attention weights multiplied by V to produce output. Use clear boxes, arrows, and matrix shapes. Include dimension labels like (n × d). Professional academic style, minimal colors (grayscale with one accent color), no decorative elements.
+>
+> **Error:** 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-3.1-flash-lite-image\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-flash-lite-image\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-flash-lite-image\nPlease retry in 24.111203424s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_input_token_count', 'quotaId': 'GenerateContentInputTokensPerModelPerMinute-FreeTier', 'quotaDimensions': {'model': 'gemini-3.1-flash-lite-image', 'location': 'global'}}, {'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-3.1-flash-lite-image', 'location': 'global'}}, {'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-3.1-flash-lite-image'}}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '24s'}]}}
+
+
+### Attention Weights from Dot-Product Similarity
+
+Given an input sequence of length $n$ with embedding dimension $d$, we first project each token into three spaces:
+- **Queries** $Q \in \mathbb{R}^{n \times d}$
+- **Keys** $K \in \mathbb{R}^{n \times d}$
+- **Values** $V \in \mathbb{R}^{n \times d}$
+
+Attention weights emerge by computing pairwise similarities. The raw attention scores are:
+
+$$S = QK^T \in \mathbb{R}^{n \times n}$$
+
+where $S_{ij}$ measures how much position $i$ attends to position $j$. The dot product captures alignment: high similarity means the query at position $i$ is closely related to the key at position $j$.
+
+### Softmax Normalization
+
+Raw scores can be arbitrarily large. We normalize them into a probability distribution via softmax:
+
+$$A = \text{softmax}\left(\frac{S}{\sqrt{d}}\right) = \text{softmax}\left(\frac{QK^T}{\sqrt{d}}\right)$$
+
+The scaling factor $\sqrt{d}$ prevents scores from saturating into extreme regions of the softmax gradient—a critical stabilization step. After softmax, each row of $A$ sums to 1, forming a proper attention distribution.
+
+### Value Aggregation
+
+The final output combines values using attention weights:
+
+$$O = AV \in \mathbb{R}^{n \times d}$$
+
+Position $i$ receives a weighted sum of all values, where weights come from row $i$ of $A$. This is pure convex combination—each output is expressible as weighted averages of the value vectors.
+
+### Why Separate Q, K, V Projections?
+
+Using identical projections everywhere would force queries and keys to have the same geometry as values. Separate projections decouple these roles:
+
+- **Keys and queries** are matched in a dedicated space optimized for similarity.
+- **Values** live in a different space, optimized for information content.
+- This flexibility allows the model to learn which information to retrieve (Q↔K matching) independently of what information to retrieve (V content).
+
+### Complete Computation in Matrix Form
+
+```python
+# Pseudocode: single attention head
+import torch
+import torch.nn.functional as F
+
+def attention(Q, K, V, d_k):
+    """
+    Q, K, V: (batch, seq_len, d_model)
+    d_k: dimension per head, typically d_model / num_heads
+    """
+    # Compute attention scores
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(d_k, dtype=Q.dtype))
+    # Shape: (batch, seq_len, seq_len)
+    
+    # Apply softmax to get attention weights
+    weights = F.softmax(scores, dim=-1)  # Probability distribution over keys
+    
+    # Combine values with attention weights
+    output = torch.matmul(weights, V)  # (batch, seq_len, d_model)
+    
+    return output, weights
+```
+
+The matrix form captures the complete flow: similarity computation ($QK^T$), scaling and normalization (softmax), and aggregation ($AV$). This parallelizable structure is what makes transformers efficient at scale.
+
+## Multi-Head Attention: Why Many Heads Are Better
+
+Single-head attention learns a single set of query, key, and value projections, forcing the model to compress all dependency patterns into one representation space. Multi-head attention solves this by running **h** parallel attention mechanisms, each operating on different learned subspaces of the input. Each head independently projects the input through distinct **W^Q**, **W^K**, and **W^V** matrices, then computes attention scores within its own dimension.
+
+This architectural choice enables the model to simultaneously capture both syntactic dependencies (word-order relationships, grammatical structure) and semantic relationships (topical coherence, long-range concept linkage). While a single head might specialize in tracking adjacent tokens, another head learns to correlate distant entities. Together, they provide a richer representational capacity than any single projection could achieve.
+
+The mechanics are straightforward: for each head *i*, compute:
+- Attention output: `head_i = softmax(Q_i K_i^T / √d_k) V_i`
+- Concatenate all heads: `MultiHead = concat(head_1, ..., head_h)`
+- Apply final projection: `output = MultiHead W^O`
+
+Here, **d_k** is the head dimension, typically **model_dim / num_heads**. This design choice is critical: it keeps the total parameter count manageable. If each head operated on the full **model_dim**, the computational cost would explode. Instead, complexity is **O(h · n² · d)**, where **n** is sequence length and **d** is model dimension—linear in the number of heads rather than quadratic.
+
+Setting head dimension to **model_dim / num_heads** also prevents over-parameterization. With 8 heads and a 512-dimensional model, each head operates on 64 dimensions, maintaining computational efficiency while allowing diverse specialization.
+
+## Scaled Dot-Product Attention Implementation
+
+### Core Formula and Scaling
+
+The scaled dot-product attention mechanism computes:
+
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$
+
+where $Q$ (queries), $K$ (keys), and $V$ (values) are projection matrices, and $d_k$ is the key dimension. The $\sqrt{d_k}$ scaling is critical: without it, dot products grow large as $d_k$ increases, pushing softmax into flat regions with vanishing gradients. This scaling keeps attention weights in a reasonable range regardless of embedding dimension.
+
+Here's a minimal PyTorch implementation:
+
+```python
+import torch
+import torch.nn.functional as F
+
+def scaled_dot_product_attention(Q, K, V, mask=None, dropout_p=0.0):
+    """
+    Args:
+        Q: (batch, seq_len, d_k)
+        K: (batch, seq_len, d_k)
+        V: (batch, seq_len, d_v)
+        mask: (batch, seq_len, seq_len) or (seq_len, seq_len)
+        dropout_p: dropout probability
+    Returns:
+        output: (batch, seq_len, d_v)
+        attention_weights: (batch, seq_len, seq_len)
+    """
+    d_k = Q.shape[-1]
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+    
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, float('-inf'))
+    
+    attn_weights = F.softmax(scores, dim=-1)
+    attn_weights = F.dropout(attn_weights, p=dropout_p, training=True)
+    
+    output = torch.matmul(attn_weights, V)
+    return output, attn_weights
+```
+
+### Causal Masking for Autoregressive Models
+
+Autoregressive models (language model pretraining) must prevent tokens from attending to future positions. Generate a lower-triangular mask:
+
+```python
+def causal_mask(seq_len, device):
+    """Creates lower-triangular mask: shape (seq_len, seq_len)"""
+    mask = torch.tril(torch.ones(seq_len, seq_len, device=device))
+    return mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, seq_len) for broadcasting
+```
+
+Apply this before softmax: `scores.masked_fill(mask == 0, float('-inf'))` sets future positions to negative infinity, yielding zero attention after softmax.
+
+### Batching Across Dimensions
+
+Batching requires careful shape handling. Standard shapes are:
+- $Q, K, V$: `(batch_size, seq_len, d_model)`
+- Scores: `(batch_size, seq_len, seq_len)` after the matmul and scaling
+- Output: `(batch_size, seq_len, d_model)`
+
+PyTorch's `transpose(-2, -1)` handles variable-rank tensors gracefully. For multi-head attention, expand to `(batch, num_heads, seq_len, d_k)` before calling this function.
+
+### Numerical Stability and Debugging
+
+**Gradient flow**: Check that gradients propagate through softmax. Use `attn_weights.backward()` and verify non-zero gradients on Q, K, V. If gradients vanish, scaling may be wrong.
+
+**Overflow/underflow testing**:
+```python
+# Test with large dot products
+Q_large = torch.randn(2, 10, 64) * 100
+K_large = torch.randn(2, 10, 64) * 100
+output, weights = scaled_dot_product_attention(Q_large, K_large, torch.randn(2, 10, 64))
+assert not torch.isnan(output).any(), "NaN detected"
+assert weights.sum(dim=-1).allclose(torch.ones_like(weights.sum(dim=-1))), "Softmax not normalized"
+```
+
+**Common pitfalls**: 
+- Forgetting the `math.sqrt(d_k)` scaling causes attention weights to concentrate on one token.
+- Applying mask *after* softmax has no effect; apply before.
+- Unbroadcastable mask shapes cause silent failures; ensure mask shape matches scores.
+
+### Memory and Performance Profile
+
+For a typical configuration (batch=32, seq_len=512, d_model=768):
+- **Scores matrix**: $32 \times 512 \times 512 \times 4\text{ bytes} = 33.5\text{ MB}$
+- **Attention weights**: same as scores
+- **Total for one head**: ~67 MB; with 12 heads, ~804 MB for the full layer
+
+Sequence length quadratically dominates memory. Flash Attention and other IO-aware kernels reduce this by recomputing softmax on the backward pass rather than storing it. For production inference, consider KV-cache optimization: reuse cached $K$ and $V$ from previous tokens instead of recomputing.
+
+## Positional Encoding Strategies
+
+Self-attention operates identically regardless of token position—it only cares about content similarity. Without explicit position information, a transformer cannot distinguish "dog bites man" from "man bites dog." Positional encodings solve this by injecting order into embeddings.
+
+### Absolute vs. Relative Positional Information
+
+**Absolute embeddings** assign a unique vector to each position index. The model learns that position 0 means "first token," position 1 means "second token," etc. This is intuitive but brittle: a model trained on sequences of length 512 often fails to extrapolate to length 1024.
+
+**Relative positional biases** instead encode the *distance* between tokens. If tokens are N positions apart, they attend with a bias that depends only on N, not their absolute indices. This generalizes better to unseen lengths because the relative structure remains constant.
+
+### Sinusoidal Positional Encoding
+
+The original transformer uses fixed sinusoidal encodings:
+
+$$PE_{(pos, 2i)} = \sin\left(\frac{pos}{10000^{2i/d}}\right), \quad PE_{(pos, 2i+1)} = \cos\left(\frac{pos}{10000^{2i/d}}\right)$$
+
+Why this works: different frequency components capture different scales of position. Low frequencies (large denominators) vary slowly across the sequence, encoding coarse position. High frequencies vary rapidly, encoding fine-grained offsets. Critically, $PE_{pos+k}$ is a linear combination of $PE_{pos}$, meaning relative distances are preserved in embedding space.
+
+### Learned vs. Fixed Encodings
+
+Learned embeddings offer flexibility—the model adapts position representations to its task. However, they require explicit handling of out-of-distribution lengths and consume parameter budget. Fixed sinusoidals are parameter-free and naturally extrapolate, but may be suboptimal for specific tasks.
+
+### Rotary Embeddings (RoPE)
+
+Rotary Position Embedding encodes relative position by rotating query and key vectors by an angle proportional to position. For position $p$, apply rotation matrix $R_p(\theta)$ where $\theta = p \cdot \Theta$ and $\Theta$ is a diagonal matrix of frequencies (similar to sinusoidal frequency scales). The key insight: $\cos(\theta_p - \theta_q) = \cos(\Delta)$ depends only on relative distance $\Delta = p - q$, automatically encoding relative information. This is computationally efficient (two 2D rotations per head) and extrapolates excellently.
+
+### Measuring Extrapolation
+
+To evaluate positional encoding robustness, train models on sequences of length $L_{train}$ and measure perplexity on length $L_{test} > L_{train}$. Sinusoidal and RoPE encodings typically maintain performance out to 1.5–2× training length. Learned embeddings degrade sharply beyond training length. Relative biases generally outperform absolute embeddings on this metric, making them preferable for variable-length or streaming applications.
+
+## Edge Cases and Failure Modes
+
+Self-attention implementations are prone to several failure modes that degrade model performance or cause training collapse. Recognizing and debugging these issues is essential for reliable deployments.
+
+**Attention Collapse**  
+Monitor whether attention weight distributions become degenerate—all mass concentrating on a single token or a narrow set of tokens. This occurs when query-key dot products saturate the softmax, eliminating information from other positions. Inspect attention weight histograms per layer and head during training. If 80%+ of weight flows to one token consistently, check for:
+- Incorrectly scaled dot products (missing or wrong √d_k normalization)
+- Uninitialized or poorly initialized weight matrices
+- Insufficient regularization or dropout
+
+**Vanishing Gradients from Softmax Saturation**  
+In deep stacks, softmax outputs approach one-hot distributions, causing gradients to vanish. Gradients flowing through near-zero softmax outputs become negligible. Address this by:
+- Monitoring gradient magnitudes per layer
+- Adding layer normalization before/after attention
+- Using gradient clipping to prevent extreme swings
+- Reducing model depth or increasing attention head dimension
+
+**Out-of-Distribution Sequence Lengths**  
+Test inference on sequences longer or shorter than training data. Extrapolation beyond seen lengths often breaks attention patterns. Implement position encodings that generalize (e.g., RoPE or ALiBi) and validate attention behavior on held-out sequence lengths.
+
+**NaN/Inf Propagation**  
+Omitting or miscalculating the √d_k scaling factor causes dot products to explode, overwhelming softmax numerics. Always verify the scaling coefficient is applied *before* softmax.
+
+**Head Redundancy**  
+Validate that multiple attention heads learn distinct patterns. Compute cosine similarity between head outputs; high similarity indicates wasted capacity and signals training issues or architectural imbalances.
+
+## Performance and Memory Considerations
+
+Self-attention's quadratic complexity creates real bottlenecks in production. Understanding and mitigating these costs is essential for deploying transformers effectively.
+
+### Memory Footprint and Gradient Checkpointing
+
+The attention matrix **Q K^T** has shape **(batch_size, seq_len, seq_len)**, consuming O(n²) memory relative to sequence length. For a 4K token sequence with batch size 32 and 12 attention heads, this alone can exceed GPU memory budgets.
+
+Gradient checkpointing trades compute for memory by recomputing activations during the backward pass instead of storing them. During forward pass, only input activations and attention output are retained; intermediate attention matrices are discarded. Backward pass recomputes them on demand. This typically reduces memory by 50–70% with a 20–30% training slowdown.
+
+### Attention Patterns for Long Sequences
+
+Full O(n²) attention becomes impractical beyond ~8K tokens. Sparse patterns reduce complexity:
+
+- **Local attention**: Each token attends to a fixed window (e.g., 512 tokens). Complexity drops to O(n·w) where w is window size.
+- **Strided attention**: Attend to every k-th position plus local neighbors. Useful for hierarchical reasoning.
+- **Block-sparse**: Divide sequence into blocks; some blocks attend fully, others skip. Balances expressiveness and cost.
+
+Choose patterns based on task: local windows work well for NLP, strided for vision, block-sparse for mixed requirements.
+
+### KV-Cache Trade-offs
+
+Caching key and value matrices during autoregressive generation eliminates recomputation, cutting per-token latency by ~80%. However, KV-cache itself is O(n·d) per sequence—at 100 tokens and 4096 hidden dims, that's ~1.6 MB per sequence. For batch size 64, this totals ~100 MB just for KV storage, limiting batch size and throughput.
+
+### Computational Cost Comparison
+
+Attention FLOPs: approximately **2n²d + 2n²** (matrix multiplications and softmax).
+Feed-forward FLOPs: approximately **4nd·dff** where dff is inner dimension.
+
+At typical ratios (dff ≈ 4d), feed-forward dominates total FLOPs. However, attention has worse memory-to-compute ratios due to irregular access patterns, making it a bottleneck despite fewer FLOPs.
+
+### Benchmark Considerations
+
+- **Naive implementation**: Clear but slow; memory bandwidth-limited on GPUs.
+- **Fused kernels**: Combine Q·K^T, softmax, and dropout into single GPU kernel. Reduces memory transfers by 3–5×.
+- **Flash Attention**: IO-aware algorithm that minimizes communication between GPU HBM and cache. Achieves 2–4× speedup and uses ~5× less memory compared to naive approaches.
+
+Profile your target hardware. Fused kernels help on A100; Flash Attention essential for long sequences on consumer GPUs. Always measure end-to-end latency, not just individual layers.
+
+## From Theory to Your First Transformer
+
+### Building a Minimal Transformer
+
+Start by assembling the core components: self-attention, feed-forward networks, layer normalization, and residual connections. Here's a minimal implementation:
+
+```python
+import torch
+import torch.nn as nn
+
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model, num_heads, d_ff):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(d_model, num_heads, batch_first=True)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Linear(d_ff, d_model)
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+    
+    def forward(self, x):
+        # Residual connection + self-attention
+        attn_out, _ = self.attn(x, x, x)
+        x = self.norm1(x + attn_out)
+        # Residual connection + feed-forward
+        ff_out = self.ff(x)
+        x = self.norm2(x + ff_out)
+        return x
+
+class SimpleTransformer(nn.Module):
+    def __init__(self, vocab_size, d_model, num_heads, num_layers, d_ff):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, d_model)
+        self.layers = nn.ModuleList([
+            TransformerBlock(d_model, num_heads, d_ff) 
+            for _ in range(num_layers)
+        ])
+        self.head = nn.Linear(d_model, vocab_size)
+    
+    def forward(self, x):
+        x = self.embed(x)
+        for layer in self.layers:
+            x = layer(x)
+        return self.head(x)
+```
+
+### Validation: Gradient Flow and Training
+
+Verify that gradients propagate cleanly through all layers. Check the gradient norm at each layer during backpropagation—they should neither explode nor vanish significantly. Residual connections prevent gradient collapse in deep networks.
+
+### Testing on a Toy Problem
+
+Use sequence copying: given input `[1, 2, 3]`, predict output `[1, 2, 3]`. This verifies the model learns position-aware patterns. Alternatively, implement simple addition: `"5+3="` → `"8"`.
+
+```python
+# Training loop snippet
+model = SimpleTransformer(vocab_size=10, d_model=64, num_heads=4, num_layers=2, d_ff=128)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+criterion = nn.CrossEntropyLoss()
+
+for epoch in range(100):
+    logits = model(input_seq)  # shape: (batch, seq_len, vocab_size)
+    loss = criterion(logits.view(-1, vocab_size), target.view(-1))
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+```
+
+### Measuring Training Dynamics
+
+Track loss curves across epochs—expect smooth decay. Monitor attention pattern evolution: early layers often attend to nearby tokens, while deeper layers capture long-range dependencies. Convergence on toy tasks should occur in 50–200 epochs.
+
+### Benchmarking Against Reference
+
+Compare your forward pass output and loss against PyTorch's `nn.TransformerEncoderLayer` with identical hyperparameters. Numerically close results (within 1e-5) confirm correctness. Use Hugging Face's `transformers.AutoModel` for larger reference checks.
