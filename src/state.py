@@ -1,6 +1,6 @@
 import operator
 from typing import TypedDict, List, Optional, Annotated
-from schema import EvidenceItem, Plan
+from src.schema import EvidenceItem, Plan
 
 class State(TypedDict):
     topic: str
