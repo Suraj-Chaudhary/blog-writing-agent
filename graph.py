@@ -16,6 +16,7 @@ g.add_node("router", router_node)
 g.add_node("research", research_node)
 g.add_node("orchestrator", orchestrator_node)
 g.add_node("worker", worker_node)
+g.add_node("join_workers", lambda state: {}) # no-op barrier node
 g.add_node("reducer", reducer_subgraph)
 
 g.add_edge(START, "router")
@@ -23,7 +24,8 @@ g.add_conditional_edges("router", route_next, {'research': "research", 'orchestr
 g.add_edge('research', 'orchestrator')
 
 g.add_conditional_edges('orchestrator', fanout, ['worker'])
-g.add_edge('worker', 'reducer')
+g.add_edge('worker', 'join_workers')
+g.add_edge('join_workers', 'reducer')
 g.add_edge('reducer', END)
 
 app = g.compile()
@@ -56,4 +58,4 @@ def run(topic: str, as_of: Optional[str] = None):
     return out
 
 if __name__ == "__main__":
-    run("Self Attention in Transformer Architecture")
+    run("Future scope of GenAI and AgenticAI")

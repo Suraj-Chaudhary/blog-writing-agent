@@ -15,8 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Load .env from the project root explicitly (don't rely on CWD for this either)
 load_dotenv(PROJECT_ROOT / ".env")
 
-IMAGES_DIR = PROJECT_ROOT / "images"   # already exists in your repo
-BLOG_DIR = PROJECT_ROOT / "blogs"      # will be created if missing
+IMAGES_DIR = PROJECT_ROOT / "images"
+BLOG_DIR = PROJECT_ROOT / "blogs"
 
 
 def _gemini_generate_image_bytes(prompt: str) -> bytes:
@@ -25,9 +25,7 @@ def _gemini_generate_image_bytes(prompt: str) -> bytes:
     Requires: pip install google-genai python-dotenv
     Env var: GEMINI_API_KEY (loaded from Blog-Writing-Agent/.env)
     """
-    # The repo's .env defines GEMINI_API_KEY; fall back to GOOGLE_API_KEY
-    # in case it's ever set that way instead (google-genai supports both names).
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
             "GEMINI_API_KEY is not set (check Blog-Writing-Agent/.env)."
@@ -39,10 +37,6 @@ def _gemini_generate_image_bytes(prompt: str) -> bytes:
         model="gemini-3.1-flash-lite-image",
         contents=prompt,
         config=types.GenerateContentConfig(
-            # Must be the singular "IMAGE", not "IMAGES" (that value doesn't
-            # exist and is what caused your 400 INVALID_ARGUMENT). Including
-            # "TEXT" alongside it is the recommended pairing for image-gen
-            # models, since they're built to emit a bit of text with the image.
             response_modalities=["TEXT", "IMAGE"],
             safety_settings=[
                 types.SafetySetting(
