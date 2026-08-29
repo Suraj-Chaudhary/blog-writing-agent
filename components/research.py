@@ -47,7 +47,7 @@ Rules:
 def research_node(state: State) -> dict:
     # take the first 10 queries from state
     queries = (state.get("queries", []) or [])
-    max_results = 2
+    max_results = 3
 
     raw_results: List[dict] = []
 
